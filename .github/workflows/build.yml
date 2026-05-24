@@ -1,0 +1,206 @@
+name: build
+
+on:
+  push:
+    branches: [ dev*, rel/* ]
+    tags: [ '*' ]
+  pull_request:
+    branches: [ dev*, rel/* ]
+  workflow_dispatch:
+
+env:
+  DOTNET_MULTILEVEL_LOOKUP: 0
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 1
+  DOTNET_SYSTEM_CONSOLE_ALLOW_ANSI_COLOR_REDIRECTION: 1
+  NUGET_XMLDOC_MODE: skip
+  TERM: xterm
+
+permissions: {}
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+
+    outputs:
+      dotnet-sdk-version: ${{ steps.setup-dotnet.outputs.dotnet-version }}
+
+    permissions:
+      attestations: write
+      contents: read
+      id-token: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ macos-latest, ubuntu-latest, windows-latest ]
+        include:
+          - os: macos-latest
+            os_name: macos
+          - os: ubuntu-latest
+            os_name: linux
+          - os: windows-latest
+            os_name: windows
+
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        filter: 'tree:0'
+        persist-credentials: false
+        show-progress: false
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
+      id: setup-dotnet
+
+    # Arcade only allows the revision to contain up to two characters, and GitHub Actions does not roll-over
+    # build numbers every day like Azure DevOps does. To balance these two requirements, set the official
+    # build ID to be the same format as the built-in default from Arcade, except with the revision number
+    # being the number of the quarter hour of the current time of day (24 * 4 = 96, which is less than 100).
+    # So a build between 00:00 and 00:14 would have a revision of 1, and a build between 23:45 and 23:59:59
+    # would have a revision of 97.
+    - name: Set Build ID
+      if: ${{ startsWith(github.ref, 'refs/pull/') == false }}
+      shell: pwsh
+      run: |
+        $Now = (Get-Date).ToUniversalTime()
+        $Hours = $Now.Hour * 4
+        $QuarterHours = [Math]::Floor($Now.Minute / 15.0)
+        $Revision = $Hours + $QuarterHours + 1
+        $BuildId = $Now.ToString("yyyyMMdd") + "." + $Revision
+        Write-Output "_AspNetContribBuildNumber=${BuildId}" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+    - name: Build, Test and Package
+      if: runner.os == 'Windows'
+      run: eng\common\CIBuild.cmd -configuration Release -prepareMachine
+
+    - name: Build, Test and Package
+      shell: pwsh
+      if: runner.os != 'Windows'
+      run: ./eng/common/cibuild.sh -configuration Release -prepareMachine
+
+    - name: Attest artifacts
+      uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+      if: |
+        runner.os == 'Windows' &&
+        github.event.repository.fork == false &&
+        startsWith(github.ref, 'refs/tags/')
+      with:
+        subject-path: |
+          ./artifacts/bin/AspNet.Security.*/Release/**/AspNet.Security.*.dll
+          ./artifacts/packages/Release/Shipping/*
+
+    - name: Publish logs
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      if: ${{ !cancelled() }}
+      with:
+        name: logs-${{ matrix.os_name }}
+        path: ./artifacts/log/Release
+
+    - name: Publish NuGet packages
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      with:
+        name: packages-${{ matrix.os_name }}
+        path: ./artifacts/packages/Release/Shipping
+
+    - name: Publish test results
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+      if: ${{ !cancelled() }}
+      with:
+        name: testresults-${{ matrix.os_name }}
+        path: ./artifacts/TestResults/Release
+
+  validate-packages:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+
+    - name: Download packages
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: packages-windows
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
+      with:
+        dotnet-version: ${{ needs.build.outputs.dotnet-sdk-version }}
+
+    - name: Validate NuGet packages
+      shell: pwsh
+      run: |
+        dotnet tool install --global dotnet-validate --version 0.0.1-preview.304 --allow-roll-forward
+        $packages = Get-ChildItem -Filter "*.nupkg" | ForEach-Object { $_.FullName }
+        $invalidPackages = 0
+        foreach ($package in $packages) {
+          dotnet validate package local $package
+          if ($LASTEXITCODE -ne 0) {
+            $invalidPackages++
+          }
+        }
+        if ($invalidPackages -gt 0) {
+          Write-Output "::error::$invalidPackages NuGet package(s) failed validation."
+          exit 1
+        }
+
+  publish-myget:
+    needs: [ build, validate-packages ]
+    runs-on: ubuntu-latest
+    if: |
+      github.event.repository.fork == false &&
+      (github.ref_name == github.event.repository.default_branch ||
+       startsWith(github.ref, 'refs/heads/dev') ||
+       startsWith(github.ref, 'refs/heads/rel/') ||
+       startsWith(github.ref, 'refs/tags/'))
+    steps:
+
+    - name: Download packages
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: packages-windows
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
+      with:
+        dotnet-version: ${{ needs.build.outputs.dotnet-sdk-version }}
+
+    - name: Push NuGet packages to aspnet-contrib MyGet
+      env:
+        API_KEY: ${{ secrets.MYGET_API_KEY }}
+        SOURCE: https://www.myget.org/F/aspnet-contrib/api/v3/index.json
+      run: dotnet nuget push "*.nupkg" --api-key "${API_KEY}" --skip-duplicate --source "${SOURCE}"
+
+  publish-nuget:
+    needs: [ build, validate-packages ]
+    environment:
+      name: NuGet.org
+      url: https://www.nuget.org/profiles/aspnet-contrib
+    permissions:
+      id-token: write
+    runs-on: ubuntu-latest
+    if: |
+      github.event.repository.fork == false &&
+      startsWith(github.ref, 'refs/tags/')
+    steps:
+
+    - name: Download packages
+      uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+      with:
+        name: packages-windows
+
+    - name: Setup .NET SDK
+      uses: actions/setup-dotnet@c2fa09f4bde5ebb9d1777cf28262a3eb3db3ced7 # v5.2.0
+      with:
+        dotnet-version: ${{ needs.build.outputs.dotnet-sdk-version }}
+
+    - name: NuGet log in
+      uses: NuGet/login@8d196754b4036150537f80ac539e15c2f1028841 # v1.2.0
+      id: nuget-login
+      with:
+        user: ${{ secrets.NUGET_USER }}
+
+    - name: Push NuGet packages to NuGet.org
+      env:
+        API_KEY: ${{ steps.nuget-login.outputs.NUGET_API_KEY }}
+        SOURCE: https://api.nuget.org/v3/index.json
+      run: dotnet nuget push "*.nupkg" --api-key "${API_KEY}" --skip-duplicate --source "${SOURCE}"

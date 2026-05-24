@@ -1,0 +1,34 @@
+name: update-dotnet-sdk
+
+on:
+  schedule:
+    - cron:  '00 19 * * TUE'
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'The branch to run the SDK updates for.'
+        required: false
+        type: choice
+        options:
+          - 'dev'
+          - 'dev-v10'
+        default: 'dev'
+
+permissions: {}
+
+jobs:
+  update-sdk:
+    name: Update .NET SDK
+    uses: martincostello/update-dotnet-sdk/.github/workflows/update-dotnet-sdk.yml@ffae562e59f60282d6673755eb968a0a32c22518 # v5.0.3
+    permissions:
+      contents: write
+      pull-requests: write
+    with:
+      labels: 'dependencies,.NET'
+      ref: ${{ inputs.branch || 'dev' }}
+      update-nuget-packages: true
+      user-email: ${{ vars.SERVICE_ACCOUNT_GIT_EMAIL }}
+      user-name: ${{ vars.SERVICE_ACCOUNT_GIT_NAME }}
+    secrets:
+      application-id: ${{ secrets.SERVICE_ACCOUNT_ID }}
+      application-private-key: ${{ secrets.SERVICE_ACCOUNT_PRIVATE_KEY }}

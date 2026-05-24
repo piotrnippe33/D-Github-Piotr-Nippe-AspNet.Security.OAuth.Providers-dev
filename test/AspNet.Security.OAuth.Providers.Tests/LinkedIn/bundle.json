@@ -1,0 +1,28 @@
+{
+  "$schema": "https://raw.githubusercontent.com/justeat/httpclient-interception/master/src/HttpClientInterception/Bundles/http-request-bundle-schema.json",
+  "items": [
+    {
+      "comment": "https://docs.microsoft.com/en-us/linkedin/shared/authentication/authorization-code-flow?context=linkedin/consumer/context",
+      "uri": "https://www.linkedin.com/oauth/v2/accessToken",
+      "method": "POST",
+      "contentFormat": "json",
+      "contentJson": {
+        "access_token": "secret-access-token",
+        "expires_in": "300"
+      }
+    },
+    {
+      "comment": "https://docs.microsoft.com/en-us/linkedin/consumer/integrations/self-serve/sign-in-with-linkedin",
+      "uri": "https://api.linkedin.com/v2/userinfo",
+      "contentFormat": "json",
+      "contentJson": {
+        "sub": "1R2RtA",
+        "email": "frodo@shire.middleearth",
+        "name": "Frodo Baggins",
+        "given_name": "Frodo",
+        "family_name": "Baggins",
+        "picture": "https://upload.wikimedia.org/wikipedia/en/4/4e/Elijah_Wood_as_Frodo_Baggins.png"
+      }
+    }
+  ]
+}
